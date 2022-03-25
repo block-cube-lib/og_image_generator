@@ -80,20 +80,20 @@ async fn get_ogp_info(url: &str) -> Result<OgpInfo> {
 }
 
 async fn create_ogp_image(ogp_info: &OgpInfo) -> Result<DynamicImage> {
-    let font = Vec::from(include_bytes!("../assets/KosugiMaru-Regular.ttf") as &[u8]);
-    let font = Font::try_from_vec(font).context("failed create font: try from vec")?;
-    //let font = {
-    //    use std::{fs::File, io::Read};
-    //    let mut file = File::open("assets/KosugiMaru-Regular.ttf")?;
-    //    let mut buf = Vec::new();
-    //    file.read_to_end(&mut buf)?;
-    //    Font::try_from_vec(buf).context("failed create font: try from vec")?
-    //};
+    //let font = Vec::from(include_bytes!("../assets/KosugiMaru-Regular.ttf") as &[u8]);
+    //let font = Font::try_from_vec(font).context("failed create font: try from vec")?;
+    let font = {
+        use std::{fs::File, io::Read};
+        let mut file = File::open("assets/KosugiMaru-Regular.ttf")?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        Font::try_from_vec(buf).context("failed create font: try from vec")?
+    };
 
-    //let base_image = image::open("assets/ogp_base.png")?;
-    //let icon_image = image::open("assets/icon.png")?;
-    let base_image = image::load_from_memory(include_bytes!("../assets/ogp_base.png"))?;
-    let icon_image = image::load_from_memory(include_bytes!("../assets/icon.png"))?;
+    let base_image = image::open("assets/ogp_base.png")?;
+    let icon_image = image::open("assets/icon.png")?;
+    //let base_image = image::load_from_memory(include_bytes!("../assets/ogp_base.png"))?;
+    //let icon_image = image::load_from_memory(include_bytes!("../assets/icon.png"))?;
     let (base_w, base_h) = base_image.dimensions();
     let mut image = overwrite_image(&base_image, &icon_image, &ICON_OFFSET, Some(ICON_SIZE));
 
