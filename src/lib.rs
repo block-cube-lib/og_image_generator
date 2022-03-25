@@ -1,11 +1,13 @@
 mod s3;
 mod types;
 
-use anyhow::{Context as _, Result};
+use anyhow::{anyhow, Context as _, Result};
 use image::{math::Rect, DynamicImage, GenericImage as _, GenericImageView, Rgba};
 use imageproc::drawing::draw_text_mut;
-use log::{debug, error};
-use rusttype::{point, Font, Scale};
+use lindera::tokenizer::Tokenizer;
+use log::{debug, error, info};
+use once_cell::sync::OnceCell;
+use rusttype::{point, Scale};
 use select::{document::Document, predicate::Attr};
 use types::*;
 
@@ -20,39 +22,72 @@ const ICON_OFFSET: Offset = Offset {
     y: -(ICON_SIZE.height as i64) - 32,
 };
 
+static FONT: OnceCell<rusttype::Font> = OnceCell::<rusttype::Font>::new();
+static BASE_IMAGE: OnceCell<DynamicImage> = OnceCell::<DynamicImage>::new();
+static ICON_IMAGE: OnceCell<DynamicImage> = OnceCell::<DynamicImage>::new();
+static TOKENIZER: OnceCell<Tokenizer> = OnceCell::<Tokenizer>::new();
+
+pub async fn init() -> Result<()> {
+    use lindera::{mode::Mode, tokenizer::TokenizerConfig};
+    use std::path::PathBuf;
+    use std::{fs::File, io::Read};
+
+    let mut file = File::open("assets/KosugiMaru-Regular.ttf")?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    let font = rusttype::Font::try_from_vec(buf).context("failed create font: try from vec")?;
+    FONT.set(font).map_err(|_| anyhow!("FONT set failed"))?;
+
+    let base_image = image::open("assets/ogp_base.png")?;
+    BASE_IMAGE
+        .set(base_image)
+        .map_err(|_| anyhow!("BASE_IMAGE set failed"))?;
+    let icon_image = image::open("assets/icon.png")?;
+    ICON_IMAGE
+        .set(icon_image)
+        .map_err(|_| anyhow!("ICON_IMAGE set failed"))?;
+
+    let config = TokenizerConfig {
+        user_dict_path: Some(PathBuf::from("./assets/userdic.csv")),
+        mode: Mode::Normal,
+        ..TokenizerConfig::default()
+    };
+    let tokenizer = Tokenizer::with_config(config)?;
+    TOKENIZER
+        .set(tokenizer)
+        .map_err(|_| anyhow!("TOKENIZER set failed"))?;
+
+    s3::init().await?;
+
+    info!("initialized");
+
+    Ok(())
+}
+
 pub async fn get_ogp_image_buffer(encoded_url: &str) -> Result<Vec<u8>> {
     let url = base64::decode(&encoded_url)?;
     let url = String::from_utf8(url)?;
     debug!("get_ogp_image_buffer: url = {url}");
-    let buffer = if let Ok(s3_connector) = s3::S3Connector::new().await {
-        match s3_connector.get_object(&url).await {
-            Ok(bytes) => {
-                debug!("exists {url} image in S3");
-                bytes
-            }
-            Err(_) => {
-                let ogp_info = get_ogp_info(&url).await?;
-                debug!("ogp info: {ogp_info:?}");
-                let image = create_ogp_image(&ogp_info).await?;
-                debug!("image created");
-                let mut buffer = Vec::<u8>::new();
-                debug!("write image buffer to Vec");
-                image.write_to(&mut buffer, image::ImageOutputFormat::Png)?;
-                debug!("try put in S3");
-                match s3_connector.put_object(&encoded_url, &buffer).await {
-                    Ok(_) => debug!("success put image in S3: url = {url}"),
-                    Err(e) => error!("error put in S3: {e:?}"),
-                };
-                buffer
-            }
+    let buffer = match s3::get_object(&url).await {
+        Ok(bytes) => {
+            debug!("exists {url} image in S3");
+            bytes
         }
-    } else {
-        debug!("failed create S3 client");
-        let ogp_info = get_ogp_info(&url).await?;
-        let image = create_ogp_image(&ogp_info).await?;
-        let mut buffer = Vec::<u8>::new();
-        image.write_to(&mut buffer, image::ImageOutputFormat::Png)?;
-        buffer
+        Err(_) => {
+            let ogp_info = get_ogp_info(&url).await?;
+            debug!("ogp info: {ogp_info:?}");
+            let image = create_ogp_image(&ogp_info).await?;
+            debug!("image created");
+            let mut buffer = Vec::<u8>::new();
+            debug!("write image buffer to Vec");
+            image.write_to(&mut buffer, image::ImageOutputFormat::Png)?;
+            debug!("try put in S3");
+            match s3::put_object(&encoded_url, &buffer).await {
+                Ok(_) => debug!("success put image in S3: url = {url}"),
+                Err(e) => error!("error put in S3: {e:?}"),
+            };
+            buffer
+        }
     };
 
     Ok(buffer)
@@ -80,22 +115,14 @@ async fn get_ogp_info(url: &str) -> Result<OgpInfo> {
 }
 
 async fn create_ogp_image(ogp_info: &OgpInfo) -> Result<DynamicImage> {
-    //let font = Vec::from(include_bytes!("../assets/KosugiMaru-Regular.ttf") as &[u8]);
-    //let font = Font::try_from_vec(font).context("failed create font: try from vec")?;
-    let font = {
-        use std::{fs::File, io::Read};
-        let mut file = File::open("assets/KosugiMaru-Regular.ttf")?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)?;
-        Font::try_from_vec(buf).context("failed create font: try from vec")?
-    };
-
-    let base_image = image::open("assets/ogp_base.png")?;
-    let icon_image = image::open("assets/icon.png")?;
-    //let base_image = image::load_from_memory(include_bytes!("../assets/ogp_base.png"))?;
-    //let icon_image = image::load_from_memory(include_bytes!("../assets/icon.png"))?;
+    let base_image = BASE_IMAGE.get().context("base image is not set")?;
     let (base_w, base_h) = base_image.dimensions();
-    let mut image = overwrite_image(&base_image, &icon_image, &ICON_OFFSET, Some(ICON_SIZE));
+    let mut image = overwrite_image(
+        &base_image,
+        ICON_IMAGE.get().context("base image is not set")?,
+        &ICON_OFFSET,
+        Some(ICON_SIZE),
+    );
 
     if let Some(ref thumbnail_url) = ogp_info.thumbnail_url {
         if let Ok(thumbnail) = download_image(&thumbnail_url).await {
@@ -126,6 +153,7 @@ async fn create_ogp_image(ogp_info: &OgpInfo) -> Result<DynamicImage> {
         x: FONT_SIZE,
         y: FONT_SIZE,
     };
+    let font = FONT.get().context("font is not set")?;
     let lines = split_lines(&ogp_info.title, &font, FONT_SIZE, text_area.width)?;
     let lines = if 5 <= lines.len() {
         let mut lines: Vec<_> = lines.into_iter().take(4).collect();
@@ -167,7 +195,7 @@ async fn download_image(url: &str) -> Result<DynamicImage> {
     Ok(img)
 }
 
-fn calc_line_height(line_text: &str, font: &Font, font_size: f32) -> Result<u32> {
+fn calc_line_height(line_text: &str, font: &rusttype::Font, font_size: f32) -> Result<u32> {
     let scale = Scale {
         x: font_size,
         y: font_size,
@@ -196,23 +224,14 @@ fn calc_line_height(line_text: &str, font: &Font, font_size: f32) -> Result<u32>
 
 fn split_lines(
     text: &str,
-    font: &Font,
+    font: &rusttype::Font,
     font_size: f32,
     text_area_width: u32,
 ) -> Result<Vec<String>> {
-    use lindera::{
-        mode::Mode,
-        tokenizer::{Tokenizer, TokenizerConfig},
-    };
-    use std::path::PathBuf;
-
-    let config = TokenizerConfig {
-        user_dict_path: Some(PathBuf::from("./assets/userdic.csv")),
-        mode: Mode::Normal,
-        ..TokenizerConfig::default()
-    };
-    let tokenizer = Tokenizer::with_config(config)?;
-    let tokens = tokenizer.tokenize(text)?;
+    let tokens = TOKENIZER
+        .get()
+        .context("failed get tokenizer")?
+        .tokenize(text)?;
     let texts = tokens
         .iter()
         .map(|t| t.text.to_string())
@@ -241,7 +260,12 @@ fn concat_strings<'a>(s_iter: impl Iterator<Item = &'a String>) -> String {
     })
 }
 
-fn is_overflow_x(text: &str, font: &Font, scale: f32, text_area_width: u32) -> Result<bool> {
+fn is_overflow_x(
+    text: &str,
+    font: &rusttype::Font,
+    scale: f32,
+    text_area_width: u32,
+) -> Result<bool> {
     let scale = Scale { x: scale, y: scale };
     let point = point(0.0, font.v_metrics(scale).ascent);
 

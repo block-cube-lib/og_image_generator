@@ -1,7 +1,8 @@
 [package]
 name = "ogp_image_generator"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+authors = ["block <block.cube.lib@gmail.com"]
 
 [dependencies]
 anyhow = "1.0.56"
