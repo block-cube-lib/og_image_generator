@@ -4,7 +4,7 @@ mod types;
 use anyhow::{Context as _, Result};
 use image::{math::Rect, DynamicImage, GenericImage as _, GenericImageView, Rgba};
 use imageproc::drawing::draw_text_mut;
-use log::{error, info};
+use log::{debug, error};
 use rusttype::{point, Font, Scale};
 use select::{document::Document, predicate::Attr};
 use types::*;
@@ -23,26 +23,31 @@ const ICON_OFFSET: Offset = Offset {
 pub async fn get_ogp_image_buffer(encoded_url: &str) -> Result<Vec<u8>> {
     let url = base64::decode(&encoded_url)?;
     let url = String::from_utf8(url)?;
-    info!("get_ogp_image_buffer: url = {url}");
+    debug!("get_ogp_image_buffer: url = {url}");
     let buffer = if let Ok(s3_connector) = s3::S3Connector::new().await {
         match s3_connector.get_object(&url).await {
             Ok(bytes) => {
-                info!("exists {url} image in S3");
+                debug!("exists {url} image in S3");
                 bytes
             }
             Err(_) => {
                 let ogp_info = get_ogp_info(&url).await?;
+                debug!("ogp info: {ogp_info:?}");
                 let image = create_ogp_image(&ogp_info).await?;
+                debug!("image created");
                 let mut buffer = Vec::<u8>::new();
+                debug!("write image buffer to Vec");
                 image.write_to(&mut buffer, image::ImageOutputFormat::Png)?;
+                debug!("try put in S3");
                 match s3_connector.put_object(&encoded_url, &buffer).await {
-                    Ok(_) => info!("success put image in S3: url = {url}"),
+                    Ok(_) => debug!("success put image in S3: url = {url}"),
                     Err(e) => error!("error put in S3: {e:?}"),
                 };
                 buffer
             }
         }
     } else {
+        debug!("failed create S3 client");
         let ogp_info = get_ogp_info(&url).await?;
         let image = create_ogp_image(&ogp_info).await?;
         let mut buffer = Vec::<u8>::new();
@@ -132,6 +137,7 @@ async fn create_ogp_image(ogp_info: &OgpInfo) -> Result<DynamicImage> {
     } else {
         lines
     };
+    debug!("lines: {lines:?}");
 
     let mut text_offset = Offset {
         ancher: Ancher::LeftTop,
@@ -148,6 +154,7 @@ async fn create_ogp_image(ogp_info: &OgpInfo) -> Result<DynamicImage> {
             &font,
             &line,
         );
+        debug!("draw line: {line}");
         text_offset.y += calc_line_height(&line, &font, FONT_SIZE)? as i64;
     }
 

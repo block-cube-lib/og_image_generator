@@ -1,5 +1,5 @@
 use lambda_http::{http::StatusCode, service_fn, Body, Error, Request, RequestExt as _, Response};
-use log::{error, info};
+use log::info;
 use ogp_image_generator::get_ogp_image_buffer;
 
 #[tokio::main]
@@ -12,7 +12,6 @@ async fn main() -> std::result::Result<(), lambda_http::Error> {
             request.query_string_parameters().first("encoded_url")
         {
             info!("encoded_url = {encoded_url}");
-            info!("decord url = {:?}", base64::decode(&encoded_url));
             match get_ogp_image_buffer(encoded_url).await {
                 Ok(buffer) => Ok(Response::new(Body::from(buffer))),
                 Err(e) => {
