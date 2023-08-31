@@ -1,6 +1,6 @@
 use anyhow::Result;
 use log::info;
-use ogp_image_generator::{get_ogp_image_buffer, init};
+use og_image_generator::{get_ogp_image_buffer, init};
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -1,6 +1,6 @@
 use lambda_http::{http::StatusCode, service_fn, Body, Error, Request, RequestExt as _, Response};
 use log::info;
-use ogp_image_generator::{get_ogp_image_buffer, init};
+use og_image_generator::{get_ogp_image_buffer, init};
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), lambda_http::Error> {

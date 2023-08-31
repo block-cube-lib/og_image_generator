@@ -1,10 +1,11 @@
 mod s3;
 mod types;
+mod tokenizer;
 
 use anyhow::{anyhow, Context as _, Result};
 use image::{math::Rect, DynamicImage, GenericImage as _, GenericImageView, Rgba};
 use imageproc::drawing::draw_text_mut;
-use lindera::tokenizer::Tokenizer;
+use lindera::tokenizer::{DictionaryConfig, Tokenizer};
 use log::{debug, error, info};
 use once_cell::sync::OnceCell;
 use rusttype::{point, Scale};
@@ -28,7 +29,11 @@ static ICON_IMAGE: OnceCell<DynamicImage> = OnceCell::<DynamicImage>::new();
 static TOKENIZER: OnceCell<Tokenizer> = OnceCell::<Tokenizer>::new();
 
 pub async fn init() -> Result<()> {
-    use lindera::{mode::Mode, tokenizer::TokenizerConfig};
+    use lindera::{
+        mode::Mode,
+        tokenizer::{TokenizerConfig, UserDictionaryConfig},
+        DictionaryKind,
+    };
     use std::path::PathBuf;
     use std::{fs::File, io::Read};
 
@@ -47,12 +52,21 @@ pub async fn init() -> Result<()> {
         .set(icon_image)
         .map_err(|_| anyhow!("ICON_IMAGE set failed"))?;
 
-    let config = TokenizerConfig {
-        user_dict_path: Some(PathBuf::from("./assets/userdic.csv")),
-        mode: Mode::Normal,
-        ..TokenizerConfig::default()
+    let dictionary = DictionaryConfig {
+        kind: Some(DictionaryKind::IPADIC),
+        path: None,
     };
-    let tokenizer = Tokenizer::with_config(config)?;
+    let user_dictionary = Some(UserDictionaryConfig {
+        kind: Some(DictionaryKind::IPADIC),
+        path: PathBuf::from("./assets/userdic.csv"),
+    });
+    let config = TokenizerConfig {
+        dictionary,
+        user_dictionary: user_dictionary,
+        mode: Mode::Normal,
+        with_details: false,
+    };
+    let tokenizer = Tokenizer::new(config)?;
     TOKENIZER
         .set(tokenizer)
         .map_err(|_| anyhow!("TOKENIZER set failed"))?;
@@ -78,14 +92,15 @@ pub async fn get_ogp_image_buffer(encoded_url: &str) -> Result<Vec<u8>> {
             debug!("ogp info: {ogp_info:?}");
             let image = create_ogp_image(&ogp_info).await?;
             debug!("image created");
-            let mut buffer = Vec::<u8>::new();
+            let mut buf_writer = std::io::BufWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
             debug!("write image buffer to Vec");
-            image.write_to(&mut buffer, image::ImageOutputFormat::Png)?;
+            image.write_to(&mut buf_writer, image::ImageOutputFormat::Png)?;
             debug!("try put in S3");
-            match s3::put_object(&encoded_url, &buffer).await {
+            match s3::put_object(&encoded_url, buf_writer.buffer()).await {
                 Ok(_) => debug!("success put image in S3: url = {url}"),
                 Err(e) => error!("error put in S3: {e:?}"),
             };
+            let buffer = buf_writer.buffer().to_vec();
             buffer
         }
     };
@@ -176,8 +191,8 @@ async fn create_ogp_image(ogp_info: &OgpInfo) -> Result<DynamicImage> {
         draw_text_mut(
             &mut image,
             Rgba([0, 0, 0, 255]),
-            text_offset.x as u32,
-            text_offset.y as u32,
+            text_offset.x.try_into()?,
+            text_offset.y.try_into()?,
             font_scale,
             &font,
             &line,
